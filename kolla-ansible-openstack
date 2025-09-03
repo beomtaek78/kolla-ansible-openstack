@@ -1,0 +1,1029 @@
+시작하기 > https://youtu.be/lHBjlj0LHSo
+
+
+오픈스택 설치 방법
+DevStack
+PackStack
+OOO(triple O)
+kolla-ansible ( 컨테이너 기반의 오픈스택 설치 운영 ) > 갤럭시 기반으로 동작하고  각 컴포넌트는 도커의 컨테이너로 운영된다.
+
+클라우드 플랫폼
+컨트롤
+네트워크
+컴퓨트
+스토리지 노드
+실습중에는 1 노드로 구축(PoC)
+
+오픈스택의 대표적인 서비스(구성예정)
+keystone (인증서비스)
+nova (컴퓨트 : HyperVisor)
+neutron (네트워크)
+cinder (block storage) => k8s 의 pod 가 사용할 볼륨 제공 (동적 프로비전)
+octavia (LBaaS) => 웹서버 부하 분산, k8s 의 type: LoadBalancer  
+trove(DBaaS)
+
+
+기본 서비스 + cinder(블록스토리지) > https://youtu.be/PBt97LEH1Dw
+
+
+kolla-ansible : 각각의 서버를 ansible 을 이용하여 도커를 설치하고 도커의 컨테이너를 활용하여 openstack 의 서비스를 배포하는 서비스
+
+all-in-one : 1 node > 인벤토리 내의 모든 변수는 1대의 서버만을 사용하므로 구성이 편리하다
+multi : 2대이상의 서버를 이용하여 구축 > 인벤토리 내에서 compute, storage, network, control 등을 IP 로 하나하나 구분해야 한다. 
+
+기본 서비스
+glance (AMI)
+keystone (IAM)
+nova (ec2)
+neutron (라우팅, 스위칭, DHCP, overlay) 
+
+cinder (EBS)
+
+리눅스 설치 
+
+
+
+
+$ sudo -i   # 루트로 전환하여
+
+
+
+
+
+
+
+# 네트워크 구성
+cd /etc/netplan 
+rm -rf 50-...
+vi 01-...
+
+
+
+
+systemctl enable systemd-networkd –now
+netplan apply
+ip a
+
+
+reboot
+
+
+
+kolla-ansible 준비하기
+
+root@openstack:~# apt update && apt install git python3-dev libffi-dev gcc libssl-dev libdbus-glib-1-dev python3-dbus libdbus-1-dev -y
+
+# 작업을 위한 가상환경 준비
+root@openstack:~# apt install python3-venv -y
+
+root@openstack:~# python3 -m venv /root/venv --system-site-packages
+root@openstack:~# ls
+snap  venv
+root@openstack:~# source venv/bin/activate
+(venv) root@openstack:~# pip install -U pip
+
+cinder(블록스토리지) 서비스를 위한 별도의 디스크가 필요하다 이는 인스턴스나 컨테이너를 위한 볼륨을 제공하는 공간이 된다.
+
+(venv) root@openstack:~# init 0
+
+새로운 디스크를 하나 추가한다. (200GB : /dev/sdb)
+
+root@openstack:~# source venv/bin/activate
+(venv) root@openstack:~# apt update && apt install -y lvm2
+
+(venv) root@openstack:~# pvcreate /dev/sdb
+  Physical volume "/dev/sdb" successfully created.
+(venv) root@openstack:~#
+(venv) root@openstack:~# vgcreate cinder-volumes /dev/sdb
+  Volume group "cinder-volumes" successfully created
+(venv) root@openstack:~#
+
+(venv) root@openstack:~# pip install \
+ git+https://opendev.org/openstack/kolla-ansible@master
+
+(venv) root@openstack:~# mkdir /etc/kolla
+(venv) root@openstack:~# cp -r \
+ /root/venv/share/kolla-ansible/etc_examples/kolla/* /etc/kolla
+(venv) root@openstack:~# ls /etc/kolla/
+globals.yml  passwords.yml
+(venv) root@openstack:~#
+(venv) root@openstack:~# ls venv/share/kolla-ansible/ansible/inventory/
+all-in-one  multinode
+(venv) root@openstack:~# cp \
+ /root/venv/share/kolla-ansible/ansible/inventory/all-in-one .
+(venv) root@openstack:~# ls
+all-in-one  snap  venv
+(venv) root@openstack:~#
+
+# kolla-ansible 은 ansible-galaxy 에 기반하여 미리 작성된 yml 에 필요한 옵션을 명령어(globals.yml)에 기반하여 오픈스택 서비스를 설치하게 된다. 
+
+
+(venv) root@openstack:~# kolla-ansible install-deps
+
+(venv) root@openstack:~# kolla-genpwd
+WARNING: Passwords file "/etc/kolla/passwords.yml" is world-readable. The permissions will be changed.
+(venv) root@openstack:~#
+(venv) root@openstack:~# tail -5 /etc/kolla/passwords.yml
+venus_keystone_password: N8WYNRXnpYGDX4J7zmMvmDvleUasbAUXn7yVKX6R
+watcher_database_password: 1iia44UoB6HcfhZuRCJC0s2FuLrEx1O4NYecubqE
+watcher_keystone_password: n0lMhnzOohe3wXReMOyMJFUOskKeqeVZnv8t4yLP
+zun_database_password: we0RpmrE5n3ihX8czFRwNIGcF76s3rHXL2HDb4xE
+zun_keystone_password: Q9gvFzN3EvypAM68nCS31KVszixF4Q6EEcWhoMG1
+(venv) root@openstack:~#
+
+(venv) root@openstack:~# vi /etc/kolla/globals.yml
+
+
+
+
+
+
+
+
+
+
+수정된 globals.yml 에 기반하여 서비스 배포 준비
+(venv) root@openstack:~# pip install docker python-openstackclient
+(venv) root@openstack:~# apt install -y openvswitch-switch
+
+# 각 노드에서 서비스를 배포하기 위한 준비 작업
+(venv) root@openstack:~# kolla-ansible bootstrap-servers -i ./all-in-one
+# 준비에 문제가 없는지 체크!
+(venv) root@openstack:~# kolla-ansible prechecks -i ./all-in-one
+(venv) root@openstack:~# kolla-ansible deploy -i ./all-in-one && kolla-ansible post-deploy -i ./all-in-one && ls /etc/kolla       # 많은 시간이 필요합니다
+
+
+
+
+
+
+다음 동영상에서는 기본 서비스 이용하기(볼륨 생성, 외부 네트워크/라우터/내부 네트워크, 인스턴스 생성하기), 로드밸런서
+
+
+
+
+3.1 기본 서비스 사용하기 : 인스턴스 생성(bastion, test 용 인스턴스) > https://youtu.be/uynGj3sP4sY
+
+
+외부 네트워크 생성
+
+(venv) root@openstack:~# ovs-vsctl add-port br-ex ens33
+(venv) root@openstack:~# ovs-vsctl set open . external-ids:ovn-bridge-mappings=physnet1:br-ex
+(venv) root@openstack:~# projectID=$(openstack project list | grep service | awk '{print $2}')
+(venv) root@openstack:~# echo $projectID
+06a092d1c9ce47d6b7a8a94171df5fc4
+(venv) root@openstack:~# openstack network create --project $projectID --share --provider-network-type flat --provider-physical-network physnet1 sharednet1 --external
+(venv) root@openstack:~# openstack subnet create subnet1 --network sharednet1 --project $projectID --subnet-range 211.183.3.0/24 --allocation-pool start=211.183.3.111,end=211.183.3.199 --gateway 211.183.3.2 --dns-nameserver 8.8.8.8
+
+(venv) root@openstack:~# ls
+admin-openrc.sh  all-in-one  snap  venv
+(venv) root@openstack:~# cp admin-openrc.sh service-openrc.sh
+(venv) root@openstack:~# vi service-openrc.sh
+(venv) root@openstack:~#
+(venv) root@openstack:~#
+(venv) root@openstack:~# cat service-openrc.sh
+# Ansible managed
+
+# Clear any old environment that may conflict.
+for key in $( set | awk '{FS="="}  /^OS_/ {print $1}' ); do unset $key ; done
+export OS_PROJECT_DOMAIN_NAME='Default'
+export OS_USER_DOMAIN_NAME='Default'
+export OS_PROJECT_NAME='service'
+export OS_TENANT_NAME='service'
+export OS_USERNAME='admin'
+export OS_PASSWORD='N4dhHECJh0ntIV3qhXPmQR0IMtlg9ysaer2Qz48L'
+export OS_AUTH_URL='http://211.183.3.90:5000'
+export OS_INTERFACE='internal'
+export OS_ENDPOINT_TYPE='internalURL'
+export OS_IDENTITY_API_VERSION='3'
+export OS_REGION_NAME='RegionOne'
+export OS_AUTH_PLUGIN='password'
+(venv) root@openstack:~#
+(venv) root@openstack:~# source service-openrc.sh
+(venv) root@openstack:~#
+(venv) root@openstack:~# openstack service list
++----------------------------------+-----------+----------------+
+| ID                               | Name      | Type           |
++----------------------------------+-----------+----------------+
+| 03161048c7db4517a2507d26e99d1004 | cinderv3  | volumev3       |
+| 06f89e3a651341d4873b27f6ea672b82 | barbican  | key-manager    |
+| 0be1ebb880e143e6bcb7382d192d619c | nova      | compute        |
+| 6a0d10955be94c968ca5d585b5f507ac | heat-cfn  | cloudformation |
+| 71f26d92adfb451c88de698a63047e03 | glance    | image          |
+| 7f809f5edcf54378a7ad04060a056004 | placement | placement      |
+| a37fd6d479ef4a96b361fe568ca17e82 | neutron   | network        |
+| a8bf79889e444bdba2a90f4ba5849926 | cinder    | block-storage  |
+| cbf057eaed97472cb7ece020aa21deec | keystone  | identity       |
+| e5a2dc9916b04982a8589b6c6a5a1e80 | heat      | orchestration  |
++----------------------------------+-----------+----------------+
+(venv) root@openstack:~#
+
+
+
+
+
+인스턴스 생성
+glance 에 클라우드용 이미지를 등록해야 한다 > https://docs.openstack.org/image-guide/obtain-images.html
+flavor list 작성
+keypair 
+security group - bastion/web/db
+
+    openstack security group rule create --proto tcp --dst-port 22 bastion
+    openstack security group rule create --proto tcp --dst-port 80 bastion
+    openstack security group rule create --proto icmp bastion
+
+
+
+
+
+
+인스턴스 생성시 자동으로 실행할 스크립트
+
+#!/bin/bash
+
+while [ 1 ]
+do
+  ping www.google.com -c 3
+  if [ $? -eq 0 ]
+  then
+      sudo apt update
+      sudo apt install -y nginx
+      echo "<center><h2>TEST PAGE</h2></center>" | sudo tee /var/www/html/index.html 
+      break
+  else
+      sleep 3
+fi
+done
+
+
+
+
+작성중에 제 노트북이 너무 무거웠는지 동영상 녹화가 자동으로 중단되어버렸네요. 녹화 프로그램이 꺼지지도 않고.. 워낙 무거운듯 합니다.
+
+동영상 중단 후 어떤일이 있었느냐…
+인스턴스 생성하려고 메뉴 클릭 하면 오른쪽에 ‘키페어/flavor 등 찾을 수 없다 오류 메시지 뜹니다’ 이건 구성의 문제가 아니라… 제 시스템이 불안해서 입니다. 이런 경우 캐시 문제로 인해 발생하는 경우가 많으니 
+
+
+위의 ‘쿠키 및 사이트 데이터’ 들어가서 캐시 지우고 다시 로그인 하면 문제가 대부분 해결 됩니다.
+
+bastion1 생성
+private1 에서 사용할 보안 그룹 생성 (외부에서는 접근할일 없어서 floating ip 는 할당하지 않습니다)
+  openstack security group create private
+  openstack security group rule create --proto icmp private
+  openstack security group rule create --proto tcp --dst-port 80 private
+  openstack security group rule create --proto tcp --dst-port 22 private
+  openstack security group rule create --proto tcp --dst-port 443 private
+
+
+private1 생성
+
+기존 키페어(kolla1key), private 네트워크에 배치, floating ip 는 할당하지 않고 , 위의 스크립트 이용하여 웹서버도 설치합니다
+
+bastion 에서 web1 로 접속해 보기
+
+ubuntu@bastion1:~$ cd .ssh
+ubuntu@bastion1:~/.ssh$ touch config kolla1key.pem
+ubuntu@bastion1:~/.ssh$ chmod 600 config
+ubuntu@bastion1:~/.ssh$ chmod 600 kolla1key.pem
+ubuntu@bastion1:~/.ssh$ vi kolla1key.pem
+# 윈도우에 다운로드 된 kolla1key.pem 을 노트패드로 열어서 복사 한 뒤 이를 여기에 붙여넣기 합니다
+ubuntu@bastion1:~/.ssh$
+ubuntu@bastion1:~/.ssh$
+ubuntu@bastion1:~/.ssh$ vi config
+Host *
+  User ubuntu
+  IdentityFile ~/.ssh/kolla1key.pem
+  StrictHostKeyChecking no
+ubuntu@bastion1:~/.ssh$
+[접속 테스트]
+web1 은 스크립트 이용하여 nginx 가 자동으로 설치되므로 bastion 에서 curl 이용하여 웹서버 동작 여부 확인이 가능합니다
+ubuntu@bastion1:~/.ssh$ curl -s 172.16.2.188
+<center><h2>TEST PAGE</h2></center>
+ubuntu@bastion1:~/.ssh$
+ubuntu@bastion1:~/.ssh$ ssh 172.16.2.188
+
+
+
+
+
+
+
+
+
+여기까지 문제 없이 동작한다면, web1 은 테스트 용 이므로 삭제해 주세요
+
+
+
+
+
+3.2 기본 서비스 사용하기 : 인스턴스 생성(cinder) > https://youtu.be/yJ5LqCIOHyc
+
+
+1. octavia 서비스를 이용한 로드밸런서(LBaaS)
+
+vi globals.yml
+
+144 octavia_network_interface: "{{ api_interface }}"
+153 octavia_network_address_family: "{{ api_address_family }}"
+
+409 enable_neutron_provider_networks: "yes"
+
+378 enable_horizon_octavia: "{{ enable_octavia | bool }}"
+
+776 octavia_auto_configure: yes
+
+
+789 octavia_amp_flavor:
+790   name: "amphora"
+791   is_public: no
+792   vcpus: 1
+793   ram: 1024
+794   disk: 5
+795
+
+
+
+
+797 octavia_amp_security_groups:
+798     mgmt-sec-grp:
+799       name: "lb-mgmt-sec-grp"
+800       enabled: true
+801       rules:
+802         - protocol: icmp
+803         - protocol: tcp
+804           src_port: 5555
+805           dst_port: 5555
+806         - protocol: tcp
+807           src_port: 9443
+808           dst_port: 9443
+809         - protocol: tcp
+810           src_port: 443
+811           dst_port: 443
+812         - protocol: tcp
+813           src_port: 22
+814           dst_port: 22
+815         - protocol: tcp
+816           src_port: "{{ octavia_amp_listen_port }}"
+817           dst_port: "{{ octavia_amp_listen_port }}"
+818
+
+840 octavia_amp_network:
+841   name: lb-mgmt-net
+842   shared: false
+843   subnet:
+844     name: lb-mgmt-subnet
+845     cidr: "{{ octavia_amp_network_cidr }}"
+846     gateway_ip: "10.1.0.1"
+847     enable_dhcp: yes
+848     allocation_pool_start: "10.1.0.101"
+849     allocation_pool_end: "10.1.0.199"
+850
+851 # Octavia management network subnet CIDR.
+852 octavia_amp_network_cidr: 10.1.0.0/24
+853
+854 octavia_amp_image_tag: "amphora"
+855
+856 # Load balancer topology options are [ SINGLE, ACTIVE_STANDBY ]
+857 octavia_loadbalancer_topology: "SINGLE"
+858
+
+
+
+
+octavia 컨트롤러, CA, amphora vm(lb;haproxy) 간 사용할 인증서, 키 관련 파일 생성
+(venv) root@openstack:~# kolla-ansible octavia-certificates -i ./all-in-one
+
+(venv) root@openstack:~# ls /etc/kolla/config/octavia/
+client_ca.cert.pem       server_ca.cert.pem
+client.cert-and-key.pem  server_ca.key.pem
+(venv) root@openstack:~#
+
+
+ 
+배포준비하기
+# 이벤토리 파일에 기반하여 오픈스택을 설치할 대상 서버(노드)들에 대해 사전 준비 작업 수행
+(venv) root@openstack:~# kolla-ansible bootstrap-servers -i ./all-in-one
+ 
+# 호스트를 위한 pre-deployment 체크
+(venv) root@openstack:~# kolla-ansible prechecks -i ./all-in-one
+ 
+# 배포하기(오랜 시간 필요)
+(venv) root@openstack:~# kolla-ansible deploy -i ./all-in-one
+
+deploy 는 기존 컨테이너를 삭제한 뒤 , 재생성
+reconfigure 는 생성되어 있는 컨테이너의 구성값을 적용한다. 새로 만들지는 않는다.		 
+
+
+저의 예) deploy 를 하면 항상 openvswitch 를 재 실행하면서 오류가 발생한다!!!
+openvswitch 는 reconfigure
+globals.yml 파일에 기반해서 deploy 
+
+install.sh
+#!/bin/bash
+#
+
+while [ 1 ]
+do
+        echo "========= ovs 재구성 : 시작 ==========="
+        kolla-ansible reconfigure -i ./all-in-one --tags openvswitch
+        if [ $? -eq 0 ]
+        then
+                echo "======== ovs 재구성  : 완료 ============"
+                kolla-ansible deploy -i ./all-in-one
+
+                if [ $? -eq 0 ]
+                then
+                        echo "======= 컨테이너 배포 : 완료 ========="
+                        break
+                else
+                        echo "======= 컨테이너 배포 : 실패 ========="
+                fi
+        else
+                echo "======== ovs 재구성 : 실패 =========="
+        fi
+
+        sleep 3
+
+done
+
+
+
+
+
+
+
+
+로드밸런서 사용을 위해 해결해야할 것들
+octavia 사용자의 작업공간(project) 는 service 이므로 로드밸런서 작업은 service 프로젝트에서 이루어져야 한다 > admin 사용자는 service 프로젝트에서 loadbalancer_admin 권한을 갖고 있어야 lb 생성관리가 가능해 진다.
+amphora 배치를 위한 네트워크 
+외부에서 라우터를 통해 amphora network 까지 라우팅이 되어야 한다.
+                  floating ip 연결                      외부 연결 불가
+외부 → vip(로드밸런서 메뉴에서 확인) → amphora vm (외부 연결 불가, 실제 트래픽을 처리하는 vm 이므로 외부 라우터를 통해 연결 가능해야 한다.(라우팅 구성 필요)) 
+
+
+호스트 리눅스에서 라우팅 추가
+
+(venv) root@openstack:~# cd /etc/netplan/
+(venv) root@openstack:/etc/netplan# ls
+01-network-manager-all.yaml
+(venv) root@openstack:/etc/netplan# touch octavia.yaml
+(venv) root@openstack:/etc/netplan# vi octavia.yaml
+(venv) root@openstack:/etc/netplan# cat octavia.yaml
+network:
+    version: 2
+    renderer: networkd
+    ethernets:
+        br-ex:
+            routes:
+            - to: 10.1.0.0/24       # 로드밸런서 네트워크
+              via: 211.183.3.154    # 라우터의 외부 IP 주소
+(venv) root@openstack:/etc/netplan#
+(venv) root@openstack:/etc/netplan#  systemctl restart systemd-networkd
+(venv) root@openstack:/etc/netplan#  netplan apply
+
+
+
+
+
+인증서
+
+(venv) root@openstack:~# docker container exec -it octavia_api cat /etc/octavia/octavia.conf | grep .pem
+ca_private_key = /etc/octavia/certs/server_ca.key.pem
+ca_certificate = /etc/octavia/certs/server_ca.cert.pem
+server_ca = /etc/octavia/certs/server_ca.cert.pem
+client_cert = /etc/octavia/certs/client.cert-and-key.pem
+client_ca = /etc/octavia/certs/client_ca.cert.pem
+(venv) root@openstack:~#
+
+(venv) root@openstack:~# docker container exec -it octavia_api mkdir /etc/octavia/certs
+(venv) root@openstack:~#
+
+(venv) root@openstack:~# ls /etc/kolla/config/octavia/
+client_ca.cert.pem       server_ca.cert.pem
+client.cert-and-key.pem  server_ca.key.pem
+(venv) root@openstack:~#
+(venv) root@openstack:~# docker container cp /etc/kolla/config/octavia/client_ca.cert.pem octavia_api:/etc/octavia/certs/
+Successfully copied 3.58kB to octavia_api:/etc/octavia/certs/
+(venv) root@openstack:~#
+(venv) root@openstack:~# docker container cp /etc/kolla/config/octavia/server_ca.cert.pem octavia_api:/etc/octavia/certs/
+Successfully copied 3.58kB to octavia_api:/etc/octavia/certs/
+(venv) root@openstack:~#
+(venv) root@openstack:~# docker container cp /etc/kolla/config/octavia/client.cert-and-key.pem octavia_api:/etc/octavia/certs/
+Successfully copied 7.17kB to octavia_api:/etc/octavia/certs/
+(venv) root@openstack:~#
+(venv) root@openstack:~# docker container cp /etc/kolla/config/octavia/server_ca.key.pem octavia_api:/etc/octavia/certs/
+Successfully copied 5.12kB to octavia_api:/etc/octavia/certs/
+(venv) root@openstack:~#
+(venv) root@openstack:~#
+(venv) root@openstack:~# docker container exec -it octavia_api ls /etc/octavia/certs
+client_ca.cert.pem       server_ca.cert.pem
+client.cert-and-key.pem  server_ca.key.pem
+(venv) root@openstack:~#
+
+
+(venv) root@openstack:~# docker ps | grep octavia   # 모두가 healthy 상태여야 함
+4be629be6da7   quay.io/openstack.kolla/octavia-worker:master-ubuntu-noble               "dumb-init --single-…"   43 minutes ago      Up 43 minutes (healthy)                octavia_worker
+cb6bae0b022d   quay.io/openstack.kolla/octavia-housekeeping:master-ubuntu-noble         "dumb-init --single-…"   43 minutes ago      Up 43 minutes (healthy)                octavia_housekeeping
+ad3025fabcf5   quay.io/openstack.kolla/octavia-health-manager:master-ubuntu-noble       "dumb-init --single-…"   43 minutes ago      Up 43 minutes (healthy)                octavia_health_manager
+8cd06690af09   quay.io/openstack.kolla/octavia-api:master-ubuntu-noble                  "dumb-init --single-…"   44 minutes ago      Up 46 seconds (healthy)                octavia_api
+(venv) root@openstack:~#
+
+
+
+# 로드밸런서로 동작할 이미지가 필요하다!!! > glance 에 등록해 두어야 한다.
+
+자료에 있는 방법중 선택1) 만 안정적으로 동작한다!!!
+
+(venv) root@openstack:~# git clone https://opendev.org/openstack/octavia
+(venv) root@openstack:~# apt -y install debootstrap qemu-utils git kpartx
+(venv) root@openstack:~# pip install diskimage-builder
+(venv) root@openstack:~# cd octavia/diskimage-create && ./diskimage-create.sh
+# 작성된 이미지를 glance 에 등록하기
+(venv) root@openstack:~/octavia/diskimage-create# openstack image create amphora --container-format bare --disk-format qcow2 --private --tag amphora --file amphora-x64-haproxy.qcow2 --property hw_architecture='x86_64' --property hw_rng_model=virtio
+
+
+
+
+
+
+
+4. k8s(kubeadm) + LB(octavia) ,  DBaaS, DNS > https://youtu.be/_rJp_RQBHTg
+
+
+사전 준비 1 : 인스턴스 생성
+
+k8s 네트워크 생성 (172.16.3.0/24) 
+master, worker 노드 생성 (리소스가 부족할 경우 master, worker 를 각 1대씩)
+
+master : m1.medium
+worker1, worker2 : m1.small
+keypair : 기존 키페어 사용 > 
+floating ip 는 할당하지 않음
+보안그룹은 모든 tcp,udp,icmp 를 허용 
+
+root@openstack:~# source venv/bin/activate
+(venv) root@openstack:~# source service-openrc.sh
+(venv) root@openstack:~# openstack security group create k8s_sg
+(venv) root@openstack:~# openstack security group rule create --proto icmp k8s_sg
+(venv) root@openstack:~# openstack security group rule create --proto tcp --dst-port 1:65535 k8s_sg
+(venv) root@openstack:~# openstack security group rule create --proto udp --dst-port 1:65535 k8s_sg
+
+
+
+
+bastion1 노드로 ssh 접속한 뒤, 여기에서 다시 master, worker1, worker2 에 접근하여 kubeadm 기반의 kubernetes 구성 (1.29)	
+
+
+
+
+
+사전 준비 2 : k8s 클러스터 구성
+runtime 은 cri-docker
+버전 1.29
+
+# 모든 노드에 도커 설치
+for pkg in docker.io docker-doc docker-compose docker-compose-v2 podman-docker containerd runc; do sudo apt-get remove $pkg; done
+
+# Add Docker's official GPG key:
+sudo apt-get update
+sudo apt-get install ca-certificates curl -y
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+
+# Add the repository to Apt sources:
+echo \
+  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
+  $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}") stable" | \
+  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+sudo apt-get update
+
+
+sudo apt-get install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+
+# 모든 노드에서 스왑 메모리 사용 중지
+
+sudo swapoff -a
+
+
+# 모든 노드에서 cri-docker 구성
+
+wget https://github.com/Mirantis/cri-dockerd/releases/download/v0.3.15/cri-dockerd-0.3.15.amd64.tgz
+tar xvf cri-dockerd-0.3.15.amd64.tgz
+sudo mv cri-dockerd/cri-dockerd /usr/local/bin/
+wget https://raw.githubusercontent.com/Mirantis/cri-dockerd/master/packaging/systemd/cri-docker.service
+wget https://raw.githubusercontent.com/Mirantis/cri-dockerd/master/packaging/systemd/cri-docker.socket
+sudo mv cri-docker.socket cri-docker.service /etc/systemd/system/
+sudo sed -i -e 's,/usr/bin/cri-dockerd,/usr/local/bin/cri-dockerd,' /etc/systemd/system/cri-docker.service
+ 
+sudo systemctl daemon-reload
+sudo systemctl enable cri-docker.service --now
+sudo systemctl enable cri-docker.socket --now
+
+
+
+
+
+
+
+
+
+# 모든 노드에 cgroupdriver 를 systemd 로 지정
+
+cat <<EOF | sudo tee /etc/docker/daemon.json
+{
+"exec-opts": ["native.cgroupdriver=systemd"],
+"log-driver": "json-file",
+"log-opts": {
+"max-size": "100m"
+},
+"storage-driver": "overlay2"
+}
+EOF
+ 
+sudo systemctl restart docker && sudo systemctl restart cri-docker
+sudo docker info | grep Cgroup
+
+
+
+
+
+
+
+# 모든 노드에 관련 패키지 설치
+
+sudo apt-get install -y apt-transport-https ca-certificates curl gpg
+sudo mkdir -p -m 755 /etc/apt/keyrings
+sudo curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.29/deb/Release.key | sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+sudo echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.29/deb/ /' | sudo tee /etc/apt/sources.list.d/kubernetes.list
+sudo apt-get update
+sudo apt-get install -y kubelet kubeadm kubectl
+sudo apt-mark hold kubelet kubeadm kubectl
+
+sudo systemctl daemon-reload
+sudo systemctl restart kubelet
+
+
+# master 노드에서 설정
+sudo -i
+modprobe br_netfilter
+echo 1 > /proc/sys/net/bridge/bridge-nf-call-iptables
+kubeadm config images pull --cri-socket unix:///run/cri-dockerd.sock
+kubeadm init --cri-socket /var/run/cri-dockerd.sock
+
+
+
+mkdir -p $HOME/.kube
+sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
+export KUBECONFIG=/etc/kubernetes/admin.conf
+echo 'export KUBECONFIG=/etc/kubernetes/admin.conf' >> ~/.bashrc
+
+
+# (worker) node 에서 
+
+sudo -i
+modprobe br_netfilter
+echo 1 > /proc/sys/net/bridge/bridge-nf-call-iptables
+kubeadm join 172.16.3.129:6443 --token 039tki.h2dyvjbsxt8wrccb \
+        --discovery-token-ca-cert-hash sha256:7e691e9923af989f673973bb327fe5458234bf6d3b921ce85c4b3fee23a619e4 --cri-socket /var/run/cri-dockerd.sock
+
+
+
+# master 노드에서 network add-on 추가(calico)
+
+# 도커 로그인을 미리 해 둔다
+docker login -u 도커id
+
+docker pull docker.io/calico/cni:v3.27.1    #모든노드
+docker pull docker.io/calico/node:v3.27.1   # 모든 노드
+docker pull docker.io/calico/kube-controllers:v3.27.1  # 모든 노드
+wget https://raw.githubusercontent.com/projectcalico/calico/v3.27.1/manifests/calico.yaml  # master
+kubectl apply -f calico.yaml      # master
+
+
+# master 노드에서 확인
+
+
+
+
+
+k8s 에서 openstack 의 어느 서비스를 이용할 것인가와 이를 이용하기 위한 인증정보 등을 담은 파일이 필요하다!! /etc/kubernetes/cloud.conf > security 을 이용하여 secret 내에 아래 파일의 내용을 담고 파일 내용이 담긴 secret 을 추가하는 방법도 가능하다. 
+아래처럼 파일로 마운트 하면 모든 노드(master, worker) 에 /etc/kubernetes/cloud.conf 가 위치해야 한다.
+
+root@master:~# touch /etc/kubernetes/cloud.conf
+root@master:~# vi /etc/kubernetes/cloud.conf
+root@master:~# cat /etc/kubernetes/cloud.conf
+[Global]
+auth-url = http://211.183.3.90:5000
+username = admin
+password = N4dhHECJh0ntIV3qhXPmQR0IMtlg9ysaer2Qz48L
+tenant-name = service
+domain-name = Default
+region = RegionOne
+
+[LoadBalancer]
+use-octavia = true
+subnet-id = 0db44b84-ef1b-4e47-8897-ce82077aec1b  # lb-mgmt-net 서브넷 UUID
+floating-network-id = c31ee82e-e749-4a47-862a-58156e64be6c # sharednet1 같은
+root@master:~#
+
+
+
+
+
+k8s 의 controller 가 cloud.conf 에 기반하여 오픈스택에 접속할 수 있어야 하며 오픈스택 전용 CCM 을 통해 octavia 서비스를 이용한 로드밸런서를 사용할 수 있도록 controller 를 구성한다.
+
+root@master:~# vi /etc/kubernetes/manifests/kube-controller-manager.yaml
+
+28, 76~78, 114~117 라인 추가
+# 76~78, 114~117 라인은 OCCM 내에 포함되어 있으므로 없어도 됨
+
+
+
+
+
+
+
+
+
+OCCM(OpenStack Cloud Controller Manager) 구성하기 
+k8s 의 controller 와 연동하여 오픈스택에 접속한 뒤, 필요한 리소스(LB)를 생성할 수 있는 외부 리소스 관리자가 필요하다. 이러한 역할을 controller 에서는 external 로 추가하고 occm 에서는 아래와 같이 ‘command’ 명령어와  마운트 되어 있는 cloud.conf 파일에 기반하여 오픈스택에 접속하고 로드밸런서를 생성한다.
+
+root@master:~# cat occm.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cloud-controller-manager
+  namespace: kube-system
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: openstack-cloud-controller-manager
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      k8s-app: openstack-cloud-controller-manager
+  template:
+    metadata:
+      labels:
+        k8s-app: openstack-cloud-controller-manager
+    spec:
+      serviceAccountName: cloud-controller-manager
+      tolerations:
+        - key: "node-role.kubernetes.io/control-plane"
+          effect: "NoSchedule"
+        - key: "node.kubernetes.io/unreachable"
+          operator: "Exists"
+          effect: "NoSchedule"
+      containers:
+        - name: openstack-cloud-controller-manager
+          image: docker.io/k8scloudprovider/openstack-cloud-controller-manager:latest
+          command:
+            - /bin/openstack-cloud-controller-manager
+            - --cloud-provider=openstack
+            - --cloud-config=/etc/kubernetes/cloud.conf
+            - --use-service-account-credentials=true
+            - --v=4
+          volumeMounts:
+            - mountPath: /etc/kubernetes/cloud.conf
+              name: cloud-config
+              readOnly: true
+      volumes:
+        - name: cloud-config
+          hostPath:
+            path: /etc/kubernetes/cloud.conf
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: system:cloud-controller-manager
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["*"]
+  - apiGroups: [""]
+    resources: ["services", "endpoints"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["services/status"]
+    verbs: ["update", "patch"]
+  - apiGroups: [""]
+    resources: ["persistentvolumes"]
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "watch", "list", "update", "create"]
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    verbs: ["get", "list", "watch", "create", "update"]
+  - apiGroups: [""]
+    resources: ["serviceaccounts/token"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: system:cloud-controller-manager
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: system:cloud-controller-manager
+subjects:
+  - kind: ServiceAccount
+    name: cloud-controller-manager
+    namespace: kube-system
+
+
+root@master:~#
+root@master:~# k apply -f occm.yaml
+root@master:~#
+root@master:~# k get pod -n kube-system | grep manager
+kube-controller-manager-master             1/1     Running   0          19m
+openstack-cloud-controller-manager-5f994   1/1     Running   0          4m37s
+openstack-cloud-controller-manager-cdzp8   1/1     Running   0          4m37s
+root@master:~#
+
+
+pod, svc 배포해 보기
+root@master:~# cat nginx.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment
+  labels:
+    app: nginx
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:latest
+          ports:
+            - containerPort: 80
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-service
+spec:
+  type: LoadBalancer
+  selector:
+    app: nginx
+  ports:
+    - port: 80
+      targetPort: 80
+root@master:~# k apply -f nginx.yaml
+
+
+
+
+
+
+[삭제] > 자동으로 LB가 삭제된다
+
+
+
+
+
+DBaaS : Trove
+aws 의 rds 와 같이 관리형 서비스
+기본 os(ubuntu) 가 필요하다. > DB제공을 위한 기본 이미지가 필요하다
+# /etc/kolla/globals.yml
+
+
+
+
+
+
+# 템플릿 이미지 다운로드  및 glance 에 등록하기
+
+wget https://tarballs.opendev.org/openstack/trove/images/trove-master-guest-ubuntu-jammy.qcow2
+(venv) root@openstack:~# openstack image create trove-guest-ubuntu \
+> --file trove-master-guest-ubuntu-jammy.qcow2 \
+> --disk-format qcow2 \
+> --container-format bare \
+> --public \
+> --tag trove \
+> --tag mariadb
+
+
+
+# trove 배포하기
+(venv) root@openstack:~# cat install.sh
+#!/bin/bash
+#
+
+while [ 1 ]
+do
+        echo "========= ovs 재구성 : 시작 ==========="
+        kolla-ansible reconfigure -i ./all-in-one --tags openvswitch
+        if [ $? -eq 0 ]
+        then
+                echo "======== ovs 재구성  : 완료 ============"
+                kolla-ansible deploy -i ./all-in-one
+
+                if [ $? -eq 0 ]
+                then
+                        echo "======= 컨테이너 배포 : 완료 ========="
+                        break
+                else
+                        echo "======= 컨테이너 배포 : 실패 ========="
+                fi
+        else
+                echo "======== ovs 재구성 : 실패 =========="
+        fi
+        sleep 3
+done
+(venv) root@openstack:~#
+
+
+
+
+
+# 오픈스택에 접속하여 trove 사용을 위한 datastore 구성하기
+
+(venv) root@openstack:~# pip install python-troveclient
+
+(venv) root@openstack:~# openstack image list
++--------------------------------------+--------------------+--------+
+| ID                                   | Name               | Status |
++--------------------------------------+--------------------+--------+
+| 51a5c951-b9c2-46e1-a675-3bf7a7378ada | amphora            | active |
+| 10ee0df7-d2b1-46e9-acd3-53a0d67dbba2 | trove-guest-ubuntu | active |
+| 9cb5d5a3-5abe-45ee-909d-04c419839764 | ubuntu             | active |
++--------------------------------------+--------------------+--------+
+(venv) root@openstack:~# openstack image show trove-guest-ubuntu -f value -c id
+10ee0df7-d2b1-46e9-acd3-53a0d67dbba2
+(venv) root@openstack:~# IMAGE_ID=$(openstack image show trove-guest-ubuntu -f value -c id)
+(venv) root@openstack:~# openstack datastore version create \
+> mariadb-10.4 \
+> mariadb \
+> mariadb \
+> "$IMAGE_ID" \
+> --active \
+> --default \
+> --version-number 10.4
+
+(venv) root@openstack:~# openstack datastore version list mariadb
++--------------------------------------+--------------+---------+
+| ID                                   | Name         | Version |
++--------------------------------------+--------------+---------+
+| ca677ed5-74b3-4909-9961-1e0f3a1c84f0 | mariadb-10.4 | 10.4    |
++--------------------------------------+--------------+---------+
+(venv) root@openstack:~#
+
+
+
+
+
+
+# DNSaaS (Designate = route53@aws)
+
+# vi /etc/kolla/globals.yml
+
+
+
+
+
+# 오픈스택 dns 관리 툴
+(venv) root@openstack:~# pip install python-designateclient        
+
+# /etc/resolv.conf 설정
+(venv) root@openstack:~# systemctl disable systemd-resolved --now
+Removed "/etc/systemd/system/sysinit.target.wants/systemd-resolved.service".
+Removed "/etc/systemd/system/dbus-org.freedesktop.resolve1.service".
+(venv) root@openstack:~#
+(venv) root@openstack:~# rm -rf /etc/resolv.conf
+(venv) root@openstack:~#
+(venv) root@openstack:~# echo "nameserver 127.0.0.1" >> /etc/resolv.conf
+(venv) root@openstack:~# echo "nameserver 8.8.8.8" >> /etc/resolv.conf
+(venv) root@openstack:~# echo "nameserver 8.8.4.4" >> /etc/resolv.conf
+(venv) root@openstack:~#
+(venv) root@openstack:~# cat /etc/resolv.conf
+nameserver 127.0.0.1
+nameserver 8.8.8.8
+nameserver 8.8.4.4
+(venv) root@openstack:~#
+
+             
